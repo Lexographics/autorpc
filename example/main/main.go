@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -32,7 +33,7 @@ func (e *CustomError) Data() interface{} {
 	return e.data
 }
 
-func CustomErrorFunc(params string) (any, error) {
+func CustomErrorFunc(ctx context.Context, params string) (any, error) {
 	return nil, &CustomError{
 		code:    -32000, // Custom error code
 		message: "This is a custom error",
@@ -40,7 +41,7 @@ func CustomErrorFunc(params string) (any, error) {
 	}
 }
 
-func Join(params []string) (string, error) {
+func Join(ctx context.Context, params []string) (string, error) {
 	return strings.Join(params, ""), nil
 }
 
@@ -49,7 +50,7 @@ type ConcatTwoParams struct {
 	B string `json:"b" validate:"required"`
 }
 
-func Concat(params ConcatTwoParams) (string, error) {
+func Concat(ctx context.Context, params ConcatTwoParams) (string, error) {
 	return params.A + params.B, nil
 }
 

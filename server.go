@@ -1,6 +1,7 @@
 package autorpc
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"sync"
@@ -24,24 +25,24 @@ func (s *Server) SetValidateErrorHandler(handler ValidateErrorHandler) {
 }
 
 // RegisterMethod registers a method with the given name and function.
-// The function must have the signature: func(ParamsType) (ResultType, error)
+// The function must have the signature: func(context.Context, ParamsType) (ResultType, error)
 //
 // Example:
 //
-//	RegisterMethod(server, "add", func(params []int) (int, error) {
+//	RegisterMethod(server, "add", func(ctx context.Context, params []int) (int, error) {
 //	    if len(params) != 2 {
 //	        return 0, errors.New("expected 2 numbers")
 //	    }
 //	    return params[0] + params[1], nil
 //	})
-func RegisterMethod[P, R any](s *Server, name string, fn func(P) (R, error)) {
+func RegisterMethod[P, R any](s *Server, name string, fn func(context.Context, P) (R, error)) {
 	handler := methodHandler{
 		fnValue: reflect.ValueOf(fn),
 	}
 	s.methods.Store(name, handler)
 }
 
-func (s *Server) processRequest(req RPCRequest) (resp RPCResponse) {
+func (s *Server) processRequest(ctx context.Context, req RPCRequest) (resp RPCResponse) {
 	defer func() {
 		if r := recover(); r != nil {
 			resp = newErrorResponse(req.ID, CodeInternalError, "Internal error")
@@ -63,11 +64,16 @@ func (s *Server) processRequest(req RPCRequest) (resp RPCResponse) {
 	}
 
 	fnType := handler.fnValue.Type()
-	if fnType.NumIn() != 1 || fnType.NumOut() != 2 {
+	if fnType.NumIn() != 2 || fnType.NumOut() != 2 {
 		return newErrorResponse(req.ID, CodeInternalError, "Internal error: invalid method signature")
 	}
 
-	paramType := fnType.In(0)
+	contextType := fnType.In(0)
+	if contextType.String() != "context.Context" {
+		return newErrorResponse(req.ID, CodeInternalError, "Internal error: first parameter must be context.Context")
+	}
+
+	paramType := fnType.In(1)
 	paramPtr := reflect.New(paramType).Interface()
 
 	if err := json.Unmarshal(req.Params, paramPtr); err != nil {
@@ -89,7 +95,7 @@ func (s *Server) processRequest(req RPCRequest) (resp RPCResponse) {
 		}
 	}
 
-	results := handler.fnValue.Call([]reflect.Value{reflect.ValueOf(paramValue)})
+	results := handler.fnValue.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(paramValue)})
 	resultValue := results[0].Interface()
 	errValue := results[1].Interface()
 

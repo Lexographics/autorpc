@@ -1,13 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 
 	"github.com/Lexographics/autorpc"
 )
 
-func Greet(name string) (string, error) {
+func Greet(ctx context.Context, name string) (string, error) {
 	return "Hello, " + name + "!", nil
 }
 

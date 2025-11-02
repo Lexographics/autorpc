@@ -54,7 +54,7 @@ func (s *Server) GetMethodSpecs() []MethodInfo {
 
 		fnType := handler.fnValue.Type()
 
-		paramType := fnType.In(0)
+		paramType := fnType.In(1)
 		resultType := fnType.Out(0)
 
 		spec := MethodInfo{

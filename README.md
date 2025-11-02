@@ -23,13 +23,14 @@ go get github.com/Lexographics/autorpc
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 
 	"github.com/Lexographics/autorpc"
 )
 
-func Greet(name string) (string, error) {
+func Greet(ctx context.Context, name string) (string, error) {
 	return "Hello, " + name + "!", nil
 }
 
@@ -71,7 +72,7 @@ Response:
 ### Basic Method with Primitive Parameters
 
 ```go
-func Add(params []float32) (float32, error) {
+func Add(ctx context.Context, params []float32) (float32, error) {
 	if len(params) != 2 {
 		return 0, errors.New("expected exactly 2 numbers")
 	}
@@ -99,7 +100,7 @@ type AddParams struct {
 	B float32 `json:"b"`
 }
 
-func Add(params AddParams) (float32, error) {
+func Add(ctx context.Context, params AddParams) (float32, error) {
 	return params.A + params.B, nil
 }
 
@@ -126,7 +127,7 @@ type ConcatParams struct {
 	B string `json:"b" validate:"required,min=1"`
 }
 
-func Concat(params ConcatParams) (string, error) {
+func Concat(ctx context.Context, params ConcatParams) (string, error) {
 	return params.A + params.B, nil
 }
 
@@ -199,7 +200,7 @@ func (e *CustomError) Data() interface{} {
 	return e.data
 }
 
-func CustomMethod(params string) (any, error) {
+func CustomMethod(ctx context.Context, params string) (any, error) {
 	return nil, &CustomError{
 		code:    -32000, // Custom error code
 		message: "This is a custom error",
@@ -217,11 +218,11 @@ You can register methods from struct instances:
 ```go
 type MathService struct{}
 
-func (s *MathService) Add(params AddParams) (float32, error) {
+func (s *MathService) Add(ctx context.Context, params AddParams) (float32, error) {
 	return params.A + params.B, nil
 }
 
-func (s *MathService) Multiply(params AddParams) (float32, error) {
+func (s *MathService) Multiply(ctx context.Context, params AddParams) (float32, error) {
 	return params.A * params.B, nil
 }
 
@@ -282,9 +283,9 @@ Creates a new JSON-RPC server instance.
 server := autorpc.NewServer()
 ```
 
-#### `RegisterMethod[P, R any](s *Server, name string, fn func(P) (R, error))`
+#### `RegisterMethod[P, R any](s *Server, name string, fn func(context.Context, P) (R, error))`
 
-Registers an RPC method with the server. The function must have exactly one parameter and return exactly two values (result, error).
+Registers an RPC method with the server. The function must have exactly two parameters (context.Context and params) and return exactly two values (result, error).
 
 - `P`: The parameter type (can be a primitive, struct, slice, etc.)
 - `R`: The result type
@@ -368,10 +369,11 @@ type RPCErrorProvider interface {
 All registered methods must follow this signature:
 
 ```go
-func MethodName(params ParamsType) (ResultType, error)
+func MethodName(ctx context.Context, params ParamsType) (ResultType, error)
 ```
 
-- **Params**: Exactly one parameter of any type
+- **Context**: First parameter must be `context.Context`
+- **Params**: Any of the supported types
 - **Returns**: Exactly two values - the result (any type) and an error
 
 **Supported Parameter Types:**
@@ -384,16 +386,16 @@ func MethodName(params ParamsType) (ResultType, error)
 
 ```go
 // Primitive parameter
-func Greet(name string) (string, error)
+func Greet(ctx context.Context, name string) (string, error)
 
 // Slice parameter
-func Sum(numbers []float32) (float32, error)
+func Sum(ctx context.Context, numbers []float32) (float32, error)
 
 // Struct parameter
-func Add(params AddParams) (float32, error)
+func Add(ctx context.Context, params AddParams) (float32, error)
 
 // Pointer parameter
-func Process(data *MyData) (*MyResult, error)
+func Process(ctx context.Context, data *MyData) (*MyResult, error)
 ```
 
 ## Complete Example
@@ -404,6 +406,7 @@ Here's a complete example with multiple features:
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -418,18 +421,18 @@ type BinaryOpParams struct {
 
 type MathService struct{}
 
-func (s *MathService) Add(params BinaryOpParams) (float32, error) {
+func (s *MathService) Add(ctx context.Context, params BinaryOpParams) (float32, error) {
 	return params.A + params.B, nil
 }
 
-func (s *MathService) Divide(params BinaryOpParams) (float32, error) {
+func (s *MathService) Divide(ctx context.Context, params BinaryOpParams) (float32, error) {
 	if params.B == 0 {
 		return 0, errors.New("division by zero")
 	}
 	return params.A / params.B, nil
 }
 
-func (s *MathService) Sum(numbers []float32) (float32, error) {
+func (s *MathService) Sum(ctx context.Context, numbers []float32) (float32, error) {
 	sum := float32(0)
 	for _, n := range numbers {
 		sum += n

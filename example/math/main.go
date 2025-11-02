@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -16,23 +17,23 @@ type BinaryOpParams struct {
 type MathService struct {
 }
 
-func (s *MathService) Add(params BinaryOpParams) (float32, error) {
+func (s *MathService) Add(ctx context.Context, params BinaryOpParams) (float32, error) {
 	return params.A + params.B, nil
 }
 
-func (s *MathService) Subtract(params BinaryOpParams) (float32, error) {
+func (s *MathService) Subtract(ctx context.Context, params BinaryOpParams) (float32, error) {
 	return params.A * params.B, nil
 }
 
-func (s *MathService) Multiply(params BinaryOpParams) (float32, error) {
+func (s *MathService) Multiply(ctx context.Context, params BinaryOpParams) (float32, error) {
 	return params.A * params.B, nil
 }
 
-func (s *MathService) Divide(params BinaryOpParams) (float32, error) {
+func (s *MathService) Divide(ctx context.Context, params BinaryOpParams) (float32, error) {
 	return params.A / params.B, nil
 }
 
-func (s *MathService) Sum(params []float32) (float32, error) {
+func (s *MathService) Sum(ctx context.Context, params []float32) (float32, error) {
 	sum := float32(0)
 	for _, param := range params {
 		sum += param
@@ -40,7 +41,7 @@ func (s *MathService) Sum(params []float32) (float32, error) {
 	return sum, nil
 }
 
-func (s *MathService) Factorial(num int) (int, error) {
+func (s *MathService) Factorial(ctx context.Context, num int) (int, error) {
 	if num < 0 {
 		return 0, errors.New("factorial is not defined for non-positive numbers")
 	}
@@ -54,7 +55,7 @@ func (s *MathService) Factorial(num int) (int, error) {
 	return result, nil
 }
 
-func (s *MathService) Fibonacci(num int) (int, error) {
+func (s *MathService) Fibonacci(ctx context.Context, num int) (int, error) {
 	if num < 0 {
 		return 0, errors.New("fibonacci is not defined for negative numbers")
 	}
