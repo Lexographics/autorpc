@@ -1,6 +1,9 @@
 package autorpc
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+)
 
 type RPCRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -40,3 +43,5 @@ func newErrorResponse(id json.RawMessage, code int, message string) RPCResponse 
 		ID: id,
 	}
 }
+
+type FuncType[P, R any] func(ctx context.Context, params P) (R, error)

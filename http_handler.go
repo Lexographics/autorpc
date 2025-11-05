@@ -60,7 +60,8 @@ func handleSingleHTTP(server *Server, w http.ResponseWriter, r *http.Request, bo
 		return
 	}
 
-	resp := server.processRequest(r.Context(), req)
+	ctx := WithHTTPRequest(r.Context(), r)
+	resp := server.processRequest(ctx, req)
 
 	// If req.ID is nil, it's a Notification.
 	// 4.1 Notification: "The Server MUST NOT reply to a Notification"
@@ -92,7 +93,7 @@ func handleBatchHTTP(server *Server, w http.ResponseWriter, r *http.Request, bod
 		return
 	}
 
-	ctx := r.Context()
+	ctx := WithHTTPRequest(r.Context(), r)
 	responses := make([]RPCResponse, 0, len(reqs))
 	var responsesMu sync.Mutex
 	var wg sync.WaitGroup
