@@ -14,7 +14,7 @@ func defaultValidateErrorHandler(errs *validator.ValidationErrors) *RPCError {
 	for _, err := range *errs {
 		details := map[string]any{}
 		if err.Field() != "" {
-			details["field"] = err.Field()
+			details["field"] = err.Namespace()
 		}
 		if err.Tag() != "" {
 			details["tag"] = err.Tag()

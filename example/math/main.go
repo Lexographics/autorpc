@@ -82,6 +82,7 @@ func main() {
 	autorpc.RegisterMethod(server, "math.fibonacci", mathService.Fibonacci)
 
 	http.Handle("/rpc", autorpc.HTTPHandler(server))
+	http.Handle("/spec", autorpc.SpecUIHandler(server))
 	http.Handle("/spec.json", autorpc.SpecJSONHandler(server))
 
 	log.Println("Server started on port 8080")
