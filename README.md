@@ -1,15 +1,12 @@
 # autorpc
 
-A type-safe, JSON-RPC 2.0 server library for Go. With minimal boilerplate, automatic request handling, validation, and introspection.
+A type-safe, JSON-RPC 2.0 server library for Go. With minimal boilerplate, automatic request handling, validation, middlewares, and introspection.
 
 ## Features
 
-- **Type-Safe**: Use Go generics for compile-time type checking
+- **Type-Safe**: Uses Go generics for compile-time type checking
 - **Automatic Validation**: Built-in parameter validation using struct tags
-- **Custom Errors**: Define custom error codes and messages
 - **Introspection UI (wip)**: Built-in web UI for exploring your API
-- **Method Specs**: JSON API for programmatic access to method information
-- **Zero Boilerplate**: Register methods with simple function signatures
 
 ## Installation
 
@@ -36,21 +33,19 @@ func Greet(ctx context.Context, name string) (string, error) {
 
 func main() {
 	server := autorpc.NewServer()
-
+	
 	// Register a method
 	autorpc.RegisterMethod(server, "greet", Greet)
-
-	// Set up HTTP handlers
+	
+	// Set up HTTP handler
 	http.Handle("/rpc", autorpc.HTTPHandler(server))
-	http.Handle("/spec", autorpc.SpecUIHandler(server))
-	http.Handle("/spec.json", autorpc.SpecJSONHandler(server))
-
+	
 	log.Println("Server started on port 8080")
 	http.ListenAndServe(":8080", nil)
 }
 ```
 
-Now you can call your RPC method:
+Call your RPC method:
 
 ```bash
 curl -X POST http://localhost:8080/rpc \
@@ -69,35 +64,12 @@ Response:
 
 ## Examples
 
-### Basic Method with Primitive Parameters
-
-```go
-func Add(ctx context.Context, params []float32) (float32, error) {
-	if len(params) != 2 {
-		return 0, errors.New("expected exactly 2 numbers")
-	}
-	return params[0] + params[1], nil
-}
-
-autorpc.RegisterMethod(server, "math.add", Add)
-```
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "math.add",
-  "params": [5.5, 3.2],
-  "id": 1
-}
-```
-
 ### Method with Struct Parameters
 
 ```go
 type AddParams struct {
-	A float32 `json:"a"`
-	B float32 `json:"b"`
+	A float32 `json:"a" validate:"required"`
+	B float32 `json:"b" validate:"required"`
 }
 
 func Add(ctx context.Context, params AddParams) (float32, error) {
@@ -107,366 +79,122 @@ func Add(ctx context.Context, params AddParams) (float32, error) {
 autorpc.RegisterMethod(server, "math.add", Add)
 ```
 
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "math.add",
-  "params": {"a": 5.5, "b": 3.2},
-  "id": 1
-}
-```
-
-### Parameter Validation
-
-Use struct tags from `github.com/go-playground/validator/v10` for automatic validation:
+### Using Groups and Middleware
 
 ```go
-type ConcatParams struct {
-	A string `json:"a" validate:"required"`
-	B string `json:"b" validate:"required,min=1"`
-}
+// Global middleware
+server.Use(ExampleMiddleware(""))
 
-func Concat(ctx context.Context, params ConcatParams) (string, error) {
-	return params.A + params.B, nil
-}
+// Create group with prefix and middleware
+mathGroup := server.Group("math.", ExampleMiddleware("math"))
 
-autorpc.RegisterMethod(server, "string.concat", Concat)
+// Register methods in group
+autorpc.RegisterMethod(mathGroup, "add", Add)
+autorpc.RegisterMethod(mathGroup, "multiply", Multiply)
+
+// Register with method-specific middleware
+autorpc.RegisterMethod(mathGroup, "divide", Divide, ExampleMiddleware("divide"))
 ```
 
-If validation fails, the server automatically returns a proper JSON-RPC error response:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "error": {
-    "code": -32602,
-    "message": "Invalid params",
-    "data": [
-      {
-        "field": "A",
-        "tag": "required",
-      }
-    ]
-  },
-  "id": 1
-}
-```
-
-### Custom Validation Error Handler
-
-You can customize how validation errors are formatted:
+### Middleware
 
 ```go
-import "github.com/go-playground/validator/v10"
-
-server.SetValidateErrorHandler(func(errs *validator.ValidationErrors) *autorpc.RPCError {
-	details := make([]string, 0, len(*errs))
-	for _, err := range *errs {
-		details = append(details, fmt.Sprintf("%s: %s", err.Field(), err.Tag()))
-	}
-	return &autorpc.RPCError{
-		Code:    autorpc.CodeInvalidParams,
-		Message: "Validation failed",
-		Data:    details,
-	}
-})
-```
-
-### Custom Error Types
-
-Implement the `RPCErrorProvider` interface to return custom JSON-RPC error codes:
-
-```go
-type CustomError struct {
-	code    int
-	message string
-	data    interface{}
-}
-
-func (e *CustomError) Error() string {
-	return e.message
-}
-
-func (e *CustomError) Code() int {
-	return e.code
-}
-
-func (e *CustomError) Message() string {
-	return e.message
-}
-
-func (e *CustomError) Data() interface{} {
-	return e.data
-}
-
-func CustomMethod(ctx context.Context, params string) (any, error) {
-	return nil, &CustomError{
-		code:    -32000, // Custom error code
-		message: "This is a custom error",
-		data:    map[string]string{"param": params},
+func ExampleMiddleware(text string) autorpc.Middleware {
+	return func(ctx context.Context, req autorpc.RPCRequest, next autorpc.HandlerFunc) (autorpc.RPCResponse, error) {
+		log.Println(text)
+		return next(ctx, req)
 	}
 }
-
-autorpc.RegisterMethod(server, "debug.custom-error", CustomMethod)
 ```
 
-### Using Methods from Structs
-
-You can register methods from struct instances:
+### HTTP Context Access
 
 ```go
-type MathService struct{}
-
-func (s *MathService) Add(ctx context.Context, params AddParams) (float32, error) {
-	return params.A + params.B, nil
-}
-
-func (s *MathService) Multiply(ctx context.Context, params AddParams) (float32, error) {
-	return params.A * params.B, nil
-}
-
-func main() {
-	server := autorpc.NewServer()
-	mathService := &MathService{}
-
-	autorpc.RegisterMethod(server, "math.add", mathService.Add)
-	autorpc.RegisterMethod(server, "math.multiply", mathService.Multiply)
-
-	// ... setup HTTP handlers
+func MyMiddleware(ctx context.Context, req autorpc.RPCRequest, next autorpc.HandlerFunc) (autorpc.RPCResponse, error) {
+	httpReq := autorpc.HTTPRequestFromContext(ctx)
+	if httpReq != nil {
+		userAgent := httpReq.Header.Get("User-Agent")
+		cookie, _ := httpReq.Cookie("session_id")
+	}
+	return next(ctx, req)
 }
 ```
-
-### Batch Requests
-
-Send multiple requests in a single HTTP call:
-
-```json
-[
-  {"jsonrpc":"2.0","method":"math.add","params":{"a":1,"b":2},"id":1},
-  {"jsonrpc":"2.0","method":"math.multiply","params":{"a":3,"b":4},"id":2}
-]
-```
-
-The server processes batch requests in parallel and returns an array of responses:
-
-```json
-[
-  {"jsonrpc":"2.0","result":3,"id":1},
-  {"jsonrpc":"2.0","result":12,"id":2}
-]
-```
-
-### Notifications
-
-Send a notification (fire-and-forget request) by omitting the `id` field:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "notify",
-  "params": {"message": "Hello"}
-}
-```
-
-The server will return HTTP 204 No Content (no response body).
 
 ## API Reference
 
 ### Server
 
-#### `NewServer() *Server`
-
-Creates a new JSON-RPC server instance.
-
 ```go
 server := autorpc.NewServer()
+server.Use(middlewares ...Middleware) // Add global middleware
 ```
 
-#### `RegisterMethod[P, R any](s *Server, name string, fn func(context.Context, P) (R, error))`
-
-Registers an RPC method with the server. The function must have exactly two parameters (context.Context and params) and return exactly two values (result, error).
-
-- `P`: The parameter type (can be a primitive, struct, slice, etc.)
-- `R`: The result type
-- `name`: The method name (e.g., "math.add")
-- `fn`: The function to call when this method is invoked
+### RegisterMethod
 
 ```go
-autorpc.RegisterMethod(server, "greet", Greet)
+autorpc.RegisterMethod[P, R any](r Registerer, name string, fn func(context.Context, P) (R, error), middlewares ...Middleware)
 ```
 
-#### `SetValidateErrorHandler(handler ValidateErrorHandler)`
+- `r`: Can be `*Server` or `*Group`
+- `name`: Method name (prefix added automatically for groups)
+- `fn`: Handler function
+- `middlewares`: Optional method-specific middleware
 
-Sets a custom handler for validation errors. If not set, uses the default handler.
+### Groups
 
 ```go
-server.SetValidateErrorHandler(func(errs *validator.ValidationErrors) *autorpc.RPCError {
-	// Return a custom error
-	return &autorpc.RPCError{...}
-})
+group := server.Group(prefix string, middlewares ...Middleware)
+group.Use(middlewares ...Middleware) // Add middleware to group
 ```
 
-#### `GetMethodSpecs() []MethodInfo`
+### Validation
 
-Returns information about all registered methods. Useful for API documentation or introspection.
+Use struct tags from `github.com/go-playground/validator/v10`:
 
 ```go
-specs := server.GetMethodSpecs()
-for _, spec := range specs {
-	fmt.Printf("Method: %s\n", spec.Name)
-	fmt.Printf("Params: %+v\n", spec.Params)
-	fmt.Printf("Result: %+v\n", spec.Result)
+type Params struct {
+	Name string `json:"name" validate:"required,min=3"`
+	Age  int    `json:"age" validate:"required,min=18"`
 }
 ```
 
-### HTTP Handlers
+### Custom Errors
 
-#### `HTTPHandler(server *Server) http.Handler`
-
-Returns an HTTP handler that processes JSON-RPC requests. Handles both single requests and batch requests.
+Implement `RPCErrorProvider`:
 
 ```go
-http.Handle("/rpc", autorpc.HTTPHandler(server))
-```
-
-#### `SpecJSONHandler(server *Server) http.Handler`
-
-Returns an HTTP handler that serves method specifications as JSON.
-
-```go
-http.Handle("/spec.json", autorpc.SpecJSONHandler(server))
-```
-
-### Error Handling
-
-#### Standard JSON-RPC Error Codes
-
-```go
-const (
-	CodeParseError     = -32700  // Invalid JSON was received
-	CodeInvalidRequest = -32600  // The JSON sent is not a valid Request object
-	CodeMethodNotFound = -32601  // The method does not exist
-	CodeInvalidParams  = -32602  // Invalid method parameter(s)
-	CodeInternalError  = -32603  // Internal JSON-RPC error
-)
-```
-
-#### `RPCErrorProvider` Interface
-
-Implement this interface to return custom error codes:
-
-```go
-type RPCErrorProvider interface {
-	Code() int
-	Message() string
-	Data() interface{}
+type CustomError struct {
+	code    int
+	message string
+	data interface{}
 }
+
+func (e *CustomError) Error() string { return e.message }
+func (e *CustomError) Code() int     { return e.code }
+func (e *CustomError) Message() string { return e.message }
+func (e *CustomError) Data() interface{} { return e.data }
 ```
 
-## Method Signature Requirements
+## Method Signature
 
-All registered methods must follow this signature:
+All methods must follow this signature:
 
 ```go
 func MethodName(ctx context.Context, params ParamsType) (ResultType, error)
 ```
 
-- **Context**: First parameter must be `context.Context`
-- **Params**: Any of the supported types
-- **Returns**: Exactly two values - the result (any type) and an error
+- First parameter: `context.Context`
+- Second parameter: Any type (primitive, struct, slice, pointer, etc.)
+- Returns: `(ResultType, error)`
 
-**Supported Parameter Types:**
-- Primitives: `string`, `int`, `float32`, `float64`, `bool`, etc.
-- Slices/Arrays: `[]string`, `[]int`, etc.
-- Structs: Any struct type with JSON tags
-- Pointers: `*MyType` (unmarshalled automatically)
+## Middleware Execution Order
 
-**Example Signatures:**
+1. Global middleware (`server.Use(...)`)
+2. Group middleware (`group.Use(...)`)
+3. Method-specific middleware (`RegisterMethod(..., middleware...)`)
+4. Handler
 
-```go
-// Primitive parameter
-func Greet(ctx context.Context, name string) (string, error)
-
-// Slice parameter
-func Sum(ctx context.Context, numbers []float32) (float32, error)
-
-// Struct parameter
-func Add(ctx context.Context, params AddParams) (float32, error)
-
-// Pointer parameter
-func Process(ctx context.Context, data *MyData) (*MyResult, error)
-```
-
-## Complete Example
-
-Here's a complete example with multiple features:
-
-```go
-package main
-
-import (
-	"context"
-	"errors"
-	"log"
-	"net/http"
-
-	"github.com/Lexographics/autorpc"
-)
-
-type BinaryOpParams struct {
-	A float32 `json:"a" validate:"required"`
-	B float32 `json:"b" validate:"required"`
-}
-
-type MathService struct{}
-
-func (s *MathService) Add(ctx context.Context, params BinaryOpParams) (float32, error) {
-	return params.A + params.B, nil
-}
-
-func (s *MathService) Divide(ctx context.Context, params BinaryOpParams) (float32, error) {
-	if params.B == 0 {
-		return 0, errors.New("division by zero")
-	}
-	return params.A / params.B, nil
-}
-
-func (s *MathService) Sum(ctx context.Context, numbers []float32) (float32, error) {
-	sum := float32(0)
-	for _, n := range numbers {
-		sum += n
-	}
-	return sum, nil
-}
-
-func main() {
-	server := autorpc.NewServer()
-
-	mathService := &MathService{}
-	autorpc.RegisterMethod(server, "math.add", mathService.Add)
-	autorpc.RegisterMethod(server, "math.divide", mathService.Divide)
-	autorpc.RegisterMethod(server, "math.sum", mathService.Sum)
-
-	http.Handle("/rpc", autorpc.HTTPHandler(server))
-	http.Handle("/spec", autorpc.SpecUIHandler(server))
-	http.Handle("/spec.json", autorpc.SpecJSONHandler(server))
-
-	log.Println("Server started on port 8080")
-	log.Println("RPC endpoint: http://localhost:8080/rpc")
-	log.Println("Spec UI: http://localhost:8080/spec")
-	log.Println("Spec JSON: http://localhost:8080/spec.json")
-	http.ListenAndServe(":8080", nil)
-}
-```
-
-## More Examples
-
-See the `example/` directory for additional examples:
-
-- **minimal**: Basic "Hello World" example
-- **main**: Examples with validation and custom errors
-- **math**: A complete math service with multiple operations
+**Note**: Middleware is captured at registration time. Methods registered before middleware is added won't have that middleware.
 
 ## License
 
@@ -475,4 +203,3 @@ MIT
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
