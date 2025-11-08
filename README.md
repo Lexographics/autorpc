@@ -6,7 +6,7 @@ A type-safe, JSON-RPC 2.0 server library for Go. With minimal boilerplate, autom
 
 - **Type-Safe**: Uses Go generics for compile-time type checking
 - **Automatic Validation**: Built-in parameter validation using struct tags
-- **Introspection UI (wip)**: Built-in web UI for exploring your API
+- **Introspection UI**: Built-in web UI for exploring your API
 
 ## Installation
 
