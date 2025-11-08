@@ -8,8 +8,12 @@ import (
 	"github.com/Lexographics/autorpc"
 )
 
-func Greet(ctx context.Context, name string) (string, error) {
-	return "Hello, " + name + "!", nil
+type GreetParams struct {
+	Name string `json:"name" validate:"required"`
+}
+
+func Greet(ctx context.Context, params GreetParams) (string, error) {
+	return "Hello, " + params.Name + "!", nil
 }
 
 func main() {
@@ -18,6 +22,7 @@ func main() {
 	autorpc.RegisterMethod(server, "greet", Greet)
 
 	http.Handle("/rpc", autorpc.HTTPHandler(server))
+	http.Handle("/spec", autorpc.SpecUIHandler(server))
 	http.Handle("/spec.json", autorpc.SpecJSONHandler(server))
 
 	log.Println("Server started on port 8080")

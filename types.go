@@ -45,3 +45,11 @@ func newErrorResponse(id json.RawMessage, code int, message string) RPCResponse 
 }
 
 type FuncType[P, R any] func(ctx context.Context, params P) (R, error)
+
+// UnmarshalKind is an interface that types can implement to specify their JSON unmarshaling kind.
+// This is useful for types like types.Time or types.Duration that unmarshal from strings or numbers
+// but are represented as structs in Go. If a type implements this interface, the returned kind
+// will be used in the API specification instead of "struct".
+type UnmarshalKind interface {
+	UnmarshalKind() string
+}

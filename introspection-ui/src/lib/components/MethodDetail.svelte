@@ -1,48 +1,104 @@
 <script>
-	import { specStore } from '$lib/stores/spec.svelte.js';
-	import PlaygroundField from './PlaygroundField.svelte';
+	import { specStore, getTypeInfo } from '$lib/stores/spec.svelte.js';
+	import { onMount, onDestroy } from 'svelte';
+	import loader from '@monaco-editor/loader';
 	import '$lib/styles/components.css';
 
-	let playgroundParams = $state({});
-	let playgroundResult = $state(null);
+	let editorContainer = $state(null);
+	let editor = $state(null);
+	let editorValue = $state('');
+	// initializing to undefined is important since rpc result can be null
+	let playgroundResult = $state(undefined);
 	let playgroundError = $state(null);
 	let playgroundLoading = $state(false);
+	let jsonError = $state(null);
 
-	function getValue(path) {
-		let current = playgroundParams;
-		for (const key of path) {
-			if (current == null || current[key] === undefined) {
-				return undefined;
-			}
-			current = current[key];
+	function generateExampleJSON(typeInfo) {
+		if (!typeInfo) {
+			return null;
 		}
-		return current;
+
+		const schema = formatSchema(typeInfo);
+		console.log(schema);
+		
+		if (schema.type === 'struct') {
+			if (schema.fields && schema.fields.length > 0) {
+				const json = {};
+				schema.fields.forEach((field) => {
+					const resolvedField = getFieldTypeInfo(field);
+					const key = resolvedField.jsonName || resolvedField.name;
+					json[key] = generateFieldValue(resolvedField);
+				});
+				return json;
+			}
+			return {};
+		} else if (schema.type === 'custom') {
+			return getPrimitiveDefaultValue(schema.kind);
+		} else if (schema.type === 'array') {
+			return [];
+		} else if (schema.type === 'map') {
+			return {};
+		} else if (schema.type === 'primitive') {
+			return getPrimitiveDefaultValue(schema.kind);
+		}
+		
+		
+		return null;
 	}
 
-	function setValue(path, value) {
-		const newParams = { ...playgroundParams };
-		let current = newParams;
-		for (let i = 0; i < path.length - 1; i++) {
-			const key = path[i];
-			if (current[key] == null || typeof current[key] !== 'object') {
-				current[key] = typeof path[i + 1] === 'number' ? [] : {};
-			}
-			if (Array.isArray(current[key])) {
-				current[key] = [...current[key]];
-			} else {
-				current[key] = { ...current[key] };
-			}
-			current = current[key];
+	function generateFieldValue(field) {
+		const fieldInfo = getFieldTypeInfo(field);
+		
+		if (fieldInfo.fields && fieldInfo.fields.length > 0) {
+			const structValue = {};
+			fieldInfo.fields.forEach((f) => {
+				const resolvedField = getFieldTypeInfo(f);
+				structValue[resolvedField.jsonName || resolvedField.name] = generateFieldValue(resolvedField);
+			});
+			return structValue;
 		}
-		current[path[path.length - 1]] = value;
-		playgroundParams = newParams;
+		
+		if (fieldInfo.package && fieldInfo.name && fieldInfo.kind !== 'map' && fieldInfo.kind !== 'struct') {
+			return getPrimitiveDefaultValue(fieldInfo.kind);
+		}
+		
+		if (fieldInfo.isPointer === true || fieldInfo.pointerDepth > 0) {
+			return null;
+		}
+		
+		if (fieldInfo.isArray === true || fieldInfo.arrayDepth > 0) {
+			return [];
+		}
+		
+		if (fieldInfo.kind === 'map') {
+			return {};
+		}
+		
+		return getPrimitiveDefaultValue(fieldInfo.kind);
+	}
+
+	function getPrimitiveDefaultValue(kind) {
+		if (kind === 'int' || kind === 'int8' || kind === 'int16' || 
+		    kind === 'int32' || kind === 'int64' ||
+		    kind === 'uint' || kind === 'uint8' || kind === 'uint16' ||
+		    kind === 'uint32' || kind === 'uint64') {
+			return 0;
+		} else if (kind === 'float32' || kind === 'float64') {
+			return 0.0;
+		} else if (kind === 'string') {
+			return '';
+		} else if (kind === 'bool') {
+			return false;
+		}
+		return null;
 	}
 
 	function formatType(type) {
 		if (!type) return 'void';
 		
-		if (type.isArray) {
-			return `${type.elementType}[]`;
+		if (type.isArray && type.arrayDepth > 0) {
+			const arrayPrefix = '[]'.repeat(type.arrayDepth);
+			return `${arrayPrefix}${type.name || type.kind}`;
 		}
 		
 		if (type.kind === 'struct' && type.fields) {
@@ -55,19 +111,41 @@
 	function formatSchema(schema) {
 		if (!schema) return null;
 		
-		if (schema.isArray === true) {
+		if (schema.isArray === true && schema.arrayDepth > 0) {
 			return {
 				type: 'array',
-				elementType: schema.elementType || schema.kind,
-				kind: schema.kind
+				arrayDepth: schema.arrayDepth,
+				kind: schema.kind,
+				name: schema.name
 			};
 		}
 		
-		if (schema.kind === 'struct' && schema.fields) {
+		if (schema.kind === 'map') {
+			return {
+				type: 'map',
+				keyType: schema.keyType,
+				valueType: schema.valueType,
+				name: schema.name
+			};
+		}
+		
+		if (schema.fields && schema.fields.length > 0) {
 			return {
 				type: 'struct',
 				name: schema.name,
+				package: schema.package,
 				fields: schema.fields
+			};
+		}
+		
+		
+		// primitve types do not have a package
+		if (schema.package && schema.name) {
+			return {
+				type: 'custom',
+				name: schema.name,
+				package: schema.package,
+				kind: schema.kind
 			};
 		}
 		
@@ -78,218 +156,186 @@
 		};
 	}
 
-	function getDefaultValue(field) {
-		if (field.isPointer === true) {
-			return null;
+	function getMethodTypeInfo(typeName) {
+		if (!typeName) return null;
+		return getTypeInfo(typeName, specStore.types);
+	}
+
+	function getFieldTypeInfo(field) {
+		if (!field.type) return field;
+		
+		const arrayDepth = field.arrayDepth || 0;
+		const pointerDepth = field.pointerDepth || 0;
+		
+		const baseTypeInfo = specStore.types[field.type];
+		if (!baseTypeInfo) {
+			return field;
 		}
 		
-		if (field.isArray === true) {
-			return [];
-		}
-		if (field.kind === 'struct' && field.fields) {
-			const structValue = {};
-			field.fields.forEach((f) => {
-				structValue[f.jsonName || f.name] = getDefaultValue(f);
-			});
-			return structValue;
-		}
-		if (field.kind === 'int') {
-			return 0;
-		} else if (field.kind === 'float32') {
-			return 0.0;
-		} else if (field.kind === 'string') {
-			return '';
-		} else if (field.kind === 'bool') {
-			return false;
-		}
-		return null;
+		return {
+			...baseTypeInfo,
+			...field,
+
+			name: field.name,
+			jsonName: field.jsonName,
+			required: field.required,
+			validationRules: field.validationRules,
+			kind: baseTypeInfo.kind || field.kind,
+			fields: baseTypeInfo.fields != null ? baseTypeInfo.fields : field.fields,
+			keyType: baseTypeInfo.keyType || field.keyType,
+			valueType: baseTypeInfo.valueType || field.valueType,
+			isArray: arrayDepth > 0 || baseTypeInfo.isArray,
+			arrayDepth: arrayDepth,
+			isPointer: pointerDepth > 0 || baseTypeInfo.isPointer,
+			pointerDepth: pointerDepth
+		};
 	}
 
-	function getNonNullDefaultValue(field) {
-		if (field.isArray === true) {
-			return [];
-		}
-		if (field.kind === 'struct' && field.fields) {
-			const structValue = {};
-			field.fields.forEach((f) => {
-				structValue[f.jsonName || f.name] = getNonNullDefaultValue(f);
-			});
-			return structValue;
-		}
-		if (field.kind === 'int') {
-			return 0;
-		} else if (field.kind === 'float32') {
-			return 0.0;
-		} else if (field.kind === 'string') {
-			return '';
-		} else if (field.kind === 'bool') {
-			return false;
-		}
-		return null;
-	}
 
-	function initializePlaygroundParams() {
+	function initializeEditor() {
 		if (!specStore.selectedMethod?.params) {
-			playgroundParams = {};
+			editorValue = '';
+			if (editor) {
+				editor.setValue('');
+			}
 			return;
 		}
 
-		const schema = formatSchema(specStore.selectedMethod.params);
-		const newParams = {};
-
-		if (schema.type === 'struct' && schema.fields) {
-			schema.fields.forEach((field) => {
-				const key = field.jsonName || field.name;
-				if (!newParams[key]) {
-					newParams[key] = getDefaultValue(field);
-				}
-			});
-		} else if (schema.type === 'array') {
-			newParams.value = [];
-		} else if (schema.type === 'primitive') {
-			if (schema.kind === 'int') {
-				newParams.value = 0;
-			} else if (schema.kind === 'float32') {
-				newParams.value = 0.0;
-			} else if (schema.kind === 'string') {
-				newParams.value = '';
-			} else if (schema.kind === 'bool') {
-				newParams.value = false;
-			} else {
-				newParams.value = null;
+		const typeInfo = getMethodTypeInfo(specStore.selectedMethod.params);
+		if (!typeInfo) {
+			editorValue = '';
+			if (editor) {
+				editor.setValue('');
 			}
+			return;
 		}
 
-		playgroundParams = newParams;
-		playgroundResult = null;
+		const exampleJSON = generateExampleJSON(typeInfo);
+		const jsonString = JSON.stringify(exampleJSON, null, 2);
+		editorValue = jsonString;
+		
+		if (editor) {
+			editor.setValue(jsonString);
+		}
+		
+		playgroundResult = undefined;
 		playgroundError = null;
+		jsonError = null;
+	}
+
+	function validateJSON(text) {
+		try {
+			JSON.parse(text);
+			jsonError = null;
+			return true;
+		} catch (e) {
+			jsonError = e.message;
+			return false;
+		}
 	}
 
 	$effect(() => {
 		if (specStore.selectedMethod) {
-			initializePlaygroundParams();
+			initializeEditor();
 		}
 	});
 
-	function parseValue(value, kind, isPointer = false) {
-		if (value === null || value === undefined) {
-			return null;
-		}
-		
-		if (kind === 'string') {
-			return value;
-		}
+	let monacoInstance = $state(null);
 
-		if (value === '') {
-			return null;
-		}
+	onMount(async () => {
+		monacoInstance = await loader.init();
+		tryInitEditor();
+	});
 
-		if (kind === 'int') {
-			const parsed = parseInt(value, 10);
-			return isNaN(parsed) ? null : parsed;
-		} else if (kind === 'float32') {
-			const parsed = parseFloat(value);
-			return isNaN(parsed) ? null : parsed;
-		} else if (kind === 'bool') {
-			if (typeof value === 'boolean') return value;
-			if (typeof value === 'string') {
-				return value.toLowerCase() === 'true' || value === '1';
-			}
-			return Boolean(value);
-		}
+	async function tryInitEditor() {
+		if (!monacoInstance || !editorContainer || editor) return;
 
-		return value;
-	}
+		editor = monacoInstance.editor.create(editorContainer, {
+			value: editorValue,
+			language: 'json',
+			theme: 'vs-dark',
+			automaticLayout: false,
+			minimap: { enabled: false },
+			formatOnPaste: true,
+			formatOnType: true
+		});
 
-	function buildFieldValue(field, value) {
-		if (field.isPointer === true && value === null) {
-			return null;
-		}
+		editor.onDidChangeModelContent(() => {
+			const value = editor.getValue();
+			editorValue = value;
+			validateJSON(value);
+		});
 
-		if (field.isArray === true) {
-			if (field.isPointer === true && value === null) {
-				return null;
-			}
-			if (!Array.isArray(value)) {
-				if (field.isPointer === true) {
-					return null;
-				}
-				return [];
-			}
-			return value.map((item) => {
-				if (field.kind === 'struct' && field.fields) {
-					return buildStructValue(field, item);
-				}
-				return parseValue(item, field.elementType || field.kind, false);
-			}).filter((v) => v !== null && v !== undefined);
-		}
-		if (field.kind === 'struct' && field.fields) {
-			return buildStructValue(field, value || {});
-		}
-		return parseValue(value, field.kind, field.isPointer === true);
-	}
-
-	function buildStructValue(field, value) {
-		if (!field.fields) return {};
-		const struct = {};
-		field.fields.forEach((f) => {
-			const key = f.jsonName || f.name;
-			const fieldValue = value?.[key];
-			if (f.isPointer === true && fieldValue === null) {
-				struct[key] = null;
-			} else {
-				struct[key] = buildFieldValue(f, fieldValue);
+		// CTRL+Enter executes the procedure
+		editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Enter, () => {
+			if (!playgroundLoading && !jsonError) {
+				executeRpc();
 			}
 		});
-		return struct;
+
+		if (specStore.selectedMethod) {
+			initializeEditor();
+		}
 	}
 
-	function buildRpcParams() {
-		if (!specStore.selectedMethod?.params) {
+	$effect(() => {
+		if (monacoInstance && editorContainer && !editor) {
+			setTimeout(() => {
+				tryInitEditor();
+			}, 0);
+		}
+	});
+
+	$effect(() => {
+		if (editor && specStore.selectedMethod) {
+			initializeEditor();
+		}
+	});
+
+	onDestroy(() => {
+		if (editor) {
+			editor.dispose();
+		}
+	});
+
+
+	function getRpcParams() {
+		if (!editorValue) {
 			return null;
 		}
 
-		const schema = formatSchema(specStore.selectedMethod.params);
-
-		if (schema.type === 'struct' && schema.fields) {
-			const params = {};
-			schema.fields.forEach((field) => {
-				const key = field.jsonName || field.name;
-				const value = playgroundParams[key];
-				params[key] = buildFieldValue(field, value);
-			});
-			return params;
-		} else if (schema.type === 'array') {
-			const value = playgroundParams.value;
-			if (!Array.isArray(value)) {
-				return [];
-			}
-			return value.map((item) => parseValue(item, schema.elementType)).filter((v) => v !== null && v !== undefined);
-		} else if (schema.type === 'primitive') {
-			return parseValue(playgroundParams.value, schema.kind);
+		try {
+			const json = JSON.parse(editorValue);
+			return json;
+		} catch (e) {
+			return null;
 		}
-
-		return null;
 	}
 
 	async function executeRpc() {
 		if (!specStore.selectedMethod) return;
 
+		if (!validateJSON(editorValue)) {
+			playgroundError = {
+				code: -32700,
+				message: 'Parse error',
+				data: jsonError
+			};
+			return;
+		}
+
 		playgroundLoading = true;
-		playgroundResult = null;
+		playgroundResult = undefined;
 		playgroundError = null;
 
 		try {
-			const params = buildRpcParams();
+			const params = getRpcParams();
 			const request = {
 				jsonrpc: '2.0',
 				method: specStore.selectedMethod.name,
-				id: Date.now()
+				id: Date.now(),
+				params: params
 			};
-			
-			if (params !== null && params !== undefined) {
-				request.params = params;
-			}
 
 			const response = await fetch('/rpc', {
 				method: 'POST',
@@ -322,8 +368,77 @@
 	<div class="method-detail">
 		<h1 class="method-name">{specStore.selectedMethod.name}</h1>
 
+		<div class="section">
+			<h2 class="section-title">Playground</h2>
+			{#if specStore.selectedMethod.params}
+				<div class="playground">
+					<div class="playground-editor-container">
+						<div bind:this={editorContainer} class="playground-editor"></div>
+						{#if jsonError}
+							<div class="playground-error">
+								JSON Error: {jsonError}
+							</div>
+						{/if}
+					</div>
+					<div class="playground-actions">
+						<button 
+							type="button" 
+							class="playground-button" 
+							disabled={playgroundLoading || !!jsonError}
+							onclick={executeRpc}
+						>
+							{playgroundLoading ? 'Executing...' : 'Execute (Ctrl+Enter)'}
+						</button>
+					</div>
+					
+					{#if playgroundError}
+						<div class="playground-error-result">
+							<h3>Error</h3>
+							<pre>{JSON.stringify(playgroundError, null, 2)}</pre>
+						</div>
+					{/if}
+					
+					{#if playgroundResult !== undefined}
+						<div class="playground-result">
+							<h3>Result</h3>
+							<pre>{JSON.stringify(playgroundResult, null, 2)}</pre>
+						</div>
+					{/if}
+				</div>
+			{:else}
+				<div class="playground">
+					<p>This method has no parameters.</p>
+					<div class="playground-actions">
+						<button 
+							type="button" 
+							class="playground-button" 
+							disabled={playgroundLoading}
+							onclick={executeRpc}
+						>
+							{playgroundLoading ? 'Executing...' : 'Execute (Ctrl+Enter)'}
+						</button>
+					</div>
+					
+					{#if playgroundError}
+						<div class="playground-error-result">
+							<h3>Error</h3>
+							<pre>{JSON.stringify(playgroundError, null, 2)}</pre>
+						</div>
+					{/if}
+					
+					{#if playgroundResult !== null}
+						<div class="playground-result">
+							<h3>Result</h3>
+							<pre>{JSON.stringify(playgroundResult, null, 2)}</pre>
+						</div>
+					{/if}
+				</div>
+			{/if}
+		</div>
+
 		{#if specStore.selectedMethod.params}
-			{@const schema = formatSchema(specStore.selectedMethod.params)}
+			{@const typeInfo = getMethodTypeInfo(specStore.selectedMethod.params)}
+			{@const schema = formatSchema(typeInfo)}
 			<div class="section">
 				<h2 class="section-title">Parameters</h2>
 				
@@ -331,25 +446,41 @@
 					<div class="type-info">
 						<div class="type-name">
 							{schema.name}
+							{#if schema.package}
+								<span class="type-package">({schema.package})</span>
+							{/if}
 							<span class="type-kind">struct</span>
 						</div>
 						{#if schema.fields && schema.fields.length > 0}
 							<ul class="field-list">
 								{#each schema.fields as field}
+									{@const resolvedField = getFieldTypeInfo(field)}
 									<li class="field-item">
 										<div class="field-name">
-											{field.name}
-											{#if field.required}
+											{resolvedField.name}
+											{#if resolvedField.required}
 												<span class="required-asterisk">*</span>
 											{/if}
-											{#if field.jsonName && field.jsonName !== field.name}
-												<span class="field-json-name">({field.jsonName})</span>
+											{#if resolvedField.jsonName && resolvedField.jsonName !== resolvedField.name}
+												<span class="field-json-name">({resolvedField.jsonName})</span>
 											{/if}
 										</div>
-										<div class="field-type">{field.type}</div>
+										<div class="field-type">
+											{#if resolvedField.arrayDepth > 0}
+												{'[]'.repeat(resolvedField.arrayDepth)}
+											{/if}
+											{#if resolvedField.pointerDepth > 0}
+												{'*'.repeat(resolvedField.pointerDepth)}
+											{/if}
+											{#if resolvedField.kind === 'map' && resolvedField.keyType && resolvedField.valueType}
+												map[{resolvedField.keyType}]{resolvedField.valueType}
+											{:else}
+												{resolvedField.type}
+											{/if}
+										</div>
 										<div class="field-meta">
-											{#if field.validationRules && field.validationRules.length > 0}
-												{#each field.validationRules.filter(rule => rule.trim() !== 'required') as rule}
+											{#if resolvedField.validationRules && resolvedField.validationRules.length > 0}
+												{#each resolvedField.validationRules.filter(rule => rule.trim() !== 'required') as rule}
 													<span class="field-tag">{rule}</span>
 												{/each}
 											{/if}
@@ -365,7 +496,29 @@
 							Array
 							<span class="type-kind">array</span>
 						</div>
-						<div class="field-type">Element type: {schema.elementType}</div>
+						<div class="field-type">
+							Array depth: {schema.arrayDepth}, Element type: {schema.name || schema.kind}
+						</div>
+					</div>
+				{:else if schema.type === 'map'}
+					<div class="type-info">
+						<div class="type-name">
+							Map
+							<span class="type-kind">map</span>
+						</div>
+						<div class="field-type">
+							map[{schema.keyType}]{schema.valueType}
+						</div>
+					</div>
+				{:else if schema.type === 'custom'}
+					<div class="type-info">
+						<div class="type-name">
+							{schema.name}
+							{#if schema.package}
+								<span class="type-package">({schema.package})</span>
+							{/if}
+							<span class="type-kind">{schema.kind}</span>
+						</div>
 					</div>
 				{:else}
 					<div class="type-info">
@@ -379,7 +532,8 @@
 		{/if}
 
 		{#if specStore.selectedMethod.result}
-			{@const resultSchema = formatSchema(specStore.selectedMethod.result)}
+			{@const resultTypeInfo = getMethodTypeInfo(specStore.selectedMethod.result)}
+			{@const resultSchema = formatSchema(resultTypeInfo)}
 			<div class="section">
 				<h2 class="section-title">Result</h2>
 				
@@ -387,19 +541,35 @@
 					<div class="type-info">
 						<div class="type-name">
 							{resultSchema.name}
+							{#if resultSchema.package}
+								<span class="type-package">({resultSchema.package})</span>
+							{/if}
 							<span class="type-kind">struct</span>
 						</div>
 						{#if resultSchema.fields && resultSchema.fields.length > 0}
 							<ul class="field-list">
 								{#each resultSchema.fields as field}
+									{@const resolvedField = getFieldTypeInfo(field)}
 									<li class="field-item">
 										<div class="field-name">
-											{field.name}
-											{#if field.jsonName && field.jsonName !== field.name}
-												<span class="field-json-name">({field.jsonName})</span>
+											{resolvedField.name}
+											{#if resolvedField.jsonName && resolvedField.jsonName !== resolvedField.name}
+												<span class="field-json-name">({resolvedField.jsonName})</span>
 											{/if}
 										</div>
-										<div class="field-type">{field.type}</div>
+										<div class="field-type">
+											{#if resolvedField.arrayDepth > 0}
+												{'[]'.repeat(resolvedField.arrayDepth)}
+											{/if}
+											{#if resolvedField.pointerDepth > 0}
+												{'*'.repeat(resolvedField.pointerDepth)}
+											{/if}
+											{#if resolvedField.kind === 'map' && resolvedField.keyType && resolvedField.valueType}
+												map[{resolvedField.keyType}]{resolvedField.valueType}
+											{:else}
+												{resolvedField.type}
+											{/if}
+										</div>
 									</li>
 								{/each}
 							</ul>
@@ -411,7 +581,29 @@
 							Array
 							<span class="type-kind">array</span>
 						</div>
-						<div class="field-type">Element type: {resultSchema.elementType}</div>
+						<div class="field-type">
+							Array depth: {resultSchema.arrayDepth}, Element type: {resultSchema.name || resultSchema.kind}
+						</div>
+					</div>
+				{:else if resultSchema.type === 'map'}
+					<div class="type-info">
+						<div class="type-name">
+							Map
+							<span class="type-kind">map</span>
+						</div>
+						<div class="field-type">
+							map[{resultSchema.keyType}]{resultSchema.valueType}
+						</div>
+					</div>
+				{:else if resultSchema.type === 'custom'}
+					<div class="type-info">
+						<div class="type-name">
+							{resultSchema.name}
+							{#if resultSchema.package}
+								<span class="type-package">({resultSchema.package})</span>
+							{/if}
+							<span class="type-kind">{resultSchema.kind}</span>
+						</div>
 					</div>
 				{:else}
 					<div class="type-info">
@@ -424,83 +616,6 @@
 			</div>
 		{/if}
 
-		<div class="section">
-			<h2 class="section-title">Playground</h2>
-			{#if specStore.selectedMethod.params}
-				{@const schema = formatSchema(specStore.selectedMethod.params)}
-				<div class="playground">
-					<form class="playground-form" onsubmit={(e) => { e.preventDefault(); executeRpc(); }}>
-						{#if schema.type === 'struct' && schema.fields}
-							{#each schema.fields as field}
-								{@const fieldKey = field.jsonName || field.name}
-								<PlaygroundField
-									field={field}
-									valuePath={[fieldKey]}
-									getValue={getValue}
-									setValue={setValue}
-									getDefaultValue={getDefaultValue}
-									getNonNullDefaultValue={getNonNullDefaultValue}
-								/>
-							{/each}
-						{:else if schema.type === 'array'}
-							<PlaygroundField
-								field={{
-									name: 'Array',
-									kind: specStore.selectedMethod.params.elementType || specStore.selectedMethod.params.kind,
-									isArray: true,
-									elementType: specStore.selectedMethod.params.elementType || specStore.selectedMethod.params.kind,
-									fields: specStore.selectedMethod.params.fields,
-									isPointer: specStore.selectedMethod.params.isPointer
-								}}
-								valuePath={['value']}
-								getValue={getValue}
-								setValue={setValue}
-								getDefaultValue={getDefaultValue}
-								getNonNullDefaultValue={getNonNullDefaultValue}
-							/>
-						{:else if schema.type === 'primitive'}
-							<PlaygroundField
-								field={{
-									name: 'Value',
-									kind: specStore.selectedMethod.params.kind,
-									isPointer: specStore.selectedMethod.params.isPointer
-								}}
-								valuePath={['value']}
-								getValue={getValue}
-								setValue={setValue}
-								getDefaultValue={getDefaultValue}
-								getNonNullDefaultValue={getNonNullDefaultValue}
-							/>
-						{/if}
-						<button type="submit" class="playground-button" disabled={playgroundLoading}>
-							{playgroundLoading ? 'Executing...' : 'Execute'}
-						</button>
-					</form>
-
-					{#if playgroundResult !== null}
-						<div class="playground-result">
-							<h3 class="playground-result-title">Result</h3>
-							<pre class="playground-result-content">{JSON.stringify(playgroundResult, null, 2)}</pre>
-						</div>
-					{/if}
-
-					{#if playgroundError}
-						<div class="playground-error">
-							<h3 class="playground-error-title">Error</h3>
-							<div class="playground-error-content">
-								<div class="playground-error-code">Code: {playgroundError.code}</div>
-								<div class="playground-error-message">Message: {playgroundError.message}</div>
-								{#if playgroundError.data}
-									<div class="playground-error-data">Data: {JSON.stringify(playgroundError.data, null, 2)}</div>
-								{/if}
-							</div>
-						</div>
-					{/if}
-				</div>
-			{:else}
-				<div class="empty-state">This method has no parameters</div>
-			{/if}
-		</div>
 	</div>
 {:else}
 	<div class="method-detail">
