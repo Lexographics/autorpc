@@ -27,6 +27,9 @@ func SpecJSONHandler(server *Server) http.Handler {
 			return
 		}
 		specs := server.GetMethodSpecs()
-		json.NewEncoder(w).Encode(specs)
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		enc.Encode(specs)
 	})
 }
